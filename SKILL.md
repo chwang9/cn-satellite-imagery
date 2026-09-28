@@ -1,7 +1,7 @@
 ---
 name: cn-satellite-imagery
 agent_created: true
-version: 1.7.8
+version: 1.7.9
 description: "输入中国区县/乡镇级地名或 6 位 adcode，下载卫星影像并拼接为带地理参考的 GeoTIFF
   （Esri World Imagery，原生 EPSG:3857，默认 zoom=17、最高 18，可选重投影 EPSG:4326 与 cn-dem 对齐）；
   可一键生成 ArcGIS 风格遥感专题地图（图示比例尺 / 罗盘指北针 / 经纬网 / 标题 / 图例 / 研究区区界红线，PNG/PDF）。
@@ -22,10 +22,13 @@ argument-hint: "<区划名 或 adcode> [--output 路径] [--zoom 18] [--parent �
 |---|---|---|
 | `references/params.md` | 全部 CLI 参数（按分组，含默认值与适用入口） | 需确认某参数默认值 / 适用入口时 |
 | `references/performance.md` | v1.6.0 实测性能基线、`--supersample` 权衡、进度交互样例 | 性能/内存调优时 |
-| `references/troubleshooting.md` | 排错表、限流容错、维护陷阱（20 条）、自检方式 | **改代码前必读维护陷阱**；出错排查时 |
+| `references/troubleshooting.md` | 排错表、限流容错、维护陷阱（21 条）、自检方式 | **改代码前必读维护陷阱**；出错排查时 |
 | `references/changelog.md` | v1.0.0 → 当前的完整更新日志 | 需要历史行为 / 版本差异时 |
 
 版本遵循语义化 `MAJOR.MINOR.PATCH`；发版三处同步：frontmatter `version`、脚本 `__version__`、产物元数据 `skill_version`，并在 changelog 留痕。
+
+> 面向仓库外部使用者（GitHub 首页）的完整说明见根目录 **`README.md`**（安装 / 快速开始 / 架构图 /
+> 性能实测 / 免责声明）；本文件面向技能运行时，强调触发场景与硬性规则。
 
 ## 环境
 
@@ -152,6 +155,14 @@ $PY $S/make_map.py yaohai.tif --panel-alpha 0                               # �
 
 ## 最近更新（完整日志见 `references/changelog.md`）
 
+- **v1.7.9**：**warp 多线程**（出图链路与整幅重投影同源根因）。① `reproject` 此前一直单线程；
+  **关键坑：设 `GDAL_NUM_THREADS` 或用 `rasterio.Env` 包住对它完全无效**（实测 1/2/4/8/ALL_CPUS
+  全为 960~990 ms 无差异），必须用 `reproject(num_threads=…)` 显式传参。② 收益：出图链路
+  387 → 107 ms（8 线程，**3.6×**）、整幅 3857→4326（23943×29724 源）**53.3 s → 24.9 s（2.14×）**，
+  两者**逐像素 max|Δ| = 0**（GDAL 按块独立计算）；端到端出图 **2.2 s → 1.64 s（−25%）**。
+  ③ 线程上限取 `min(cpu_count, 8)`：16 线程在整幅场景反而 **慢 30%**（超额订阅争抢），8 是拐点。
+  ④ bbox 模式血缘补 `zoom` 标签（此前只有一键入口写，`--bbox` 直接下载的产物缺）。
+  ⑤ 新增根目录 **`README.md`**（面向 GitHub / 外部使用者的完整说明）。
 - **v1.7.8**：**全技能优化审视**（流程 = 通读 → 静态测量 + 微基准 → 按数据定清单（含放弃项）
   → 逐项改 → 逐项回归）。① **出图性能**：先量出阶段分解 —— 读图 **56%** / 绘制 **2%** /
   存盘 **42%**，据此**没碰任何版式代码**，只优化两个大头：降采样读的重采样核

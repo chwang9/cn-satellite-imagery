@@ -1,4 +1,4 @@
-> 本文是 cn-satellite-imagery（v1.7.8）的参考材料，按需检索，无需整篇读入。
+> 本文是 cn-satellite-imagery（v1.7.9）的参考材料，按需检索，无需整篇读入。
 
 # 全部 CLI 参数（按 `--help` 实测整理，默认值以代码为准）
 

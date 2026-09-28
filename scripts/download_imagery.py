@@ -41,6 +41,15 @@
       留出地理留白，避免行政边界压在图边（此前 TIF 精确裁到 bbox，红线正好贴图框）。
   (B) make_map.py 指北针重绘为专业双色罗盘指针（北深南浅 + 枢轴圆点 + 白描边），并给行政边界
       加白色底衬，深浅影像上均清晰可读。
+- 【v1.7.9】warp 多线程（出图链路与整幅重投影同源根因）：
+  (A) `reproject` 此前一直是**单线程**。**关键坑**：设 `GDAL_NUM_THREADS` 或用 `rasterio.Env`
+      包住**完全无效** —— 实测该变量取 1/2/4/8/ALL_CPUS 时整条读取耗时都在 960~990 ms
+      （概览生成同理，24~30 s 纯抖动）；必须用 `reproject(num_threads=...)` 显式传参。
+  (B) 收益：出图链路（4592x4848 -> 2296x2424）387 ms -> 107 ms（8 线程，3.6x）；
+      整幅 3857->4326（23943x29724 源）53.3 s -> 24.9 s（2.14x）。
+      两者**逐像素 max|Δ| = 0**（GDAL 多线程 warp 按块独立计算、块间无共享状态）。
+  (C) 线程数上限取 `min(cpu_count, 8)`：实测整幅场景 16 线程反而 **33.0 s（比 8 线程慢 30%）**，
+      属超额订阅争抢 —— 8 是拐点，不是越多越好。
 - 【v1.7.8】全技能优化审视（每项都有微基准）：
   (A) `_analyze_tile` 在 percentile 模式下把「np.median + 两次 np.percentile」合并为
       **一次** `np.percentile(p, (5, 50, 95), axis=0)`：536 → 363 µs/瓦片（-32%），
@@ -190,7 +199,7 @@ WGS84 = "EPSG:4326"
 # build_mosaic）就会 NameError；而它被包在 try 里，表现为「静默不裁切」而不是报错。
 # 【v1.7.0 修复】给默认值，并让接收方支持显式传参，不再依赖调用顺序。
 _REQUEST_BBOX = None
-__version__ = "1.7.8"
+__version__ = "1.7.9"
 DEFAULT_MAX_TILES = 60000
 DEFAULT_MAX_WORKERS = 12
 # 单张瓦片的解码数组（256×256×3 uint8）在内存里约为 0.2 MB。若把全部瓦片都留内存，
@@ -218,6 +227,17 @@ BLANK_CUBE_HALF = 20
 #   q90: 0.124×，mean 2.31 / p99  9 / max 26   <- 选此：损失降 41%，体积仍约为原来的 1/9
 #   q95: 0.167×，mean 1.56 / p99  6 / max 19
 JPEG_QUALITY = 90
+
+# GDAL warp（3857 -> 4326 重投影）的并行线程数。
+# 【v1.7.9】此前 warp 一直是单线程。注意：**光设 `GDAL_NUM_THREADS` / 用 `rasterio.Env`
+# 包住是没用的** —— 实测该变量取 1/2/4/8/ALL_CPUS 时整条读取耗时都在 960~990 ms，无差异；
+# 必须用 `reproject(num_threads=...)` 显式传参（rasterio 会翻译成 GDAL warp 的 NUM_THREADS）。
+# 微基准（包河区 z17 出图链路，输入 4592x4848 -> 2296x2424）：
+#   num_threads 默认(1) 387 ms -> 2: 212 -> 4: 126 -> 8: 107 -> 16: 87 ms，
+#   且**逐像素 max|Δ| = 0**（GDAL 多线程 warp 按块独立计算，块间无共享状态）。
+# 整幅重投影（23943x29724 源）收益更大，实测数字见 references/performance.md。
+# 上限取 8：此时已拿到 3.6x，再往上边际收益低、却更吃内存与线程调度。
+WARP_THREADS = max(1, min(os.cpu_count() or 1, 8))
 
 
 def flip_y(t):
@@ -485,6 +505,10 @@ def reproject_to_wgs84(src_path):
                 src_crs=src.crs, dst_crs=WGS84,
                 src_transform=src.transform, dst_transform=transform,
                 resampling=Resampling.bilinear,
+                # 【v1.7.9】多线程 warp（此前单线程）。整幅重投影（2.4 万 x 3 万 源）
+                # 是这条链路里最吃 CPU 的一步，收益见 references/performance.md；
+                # 结果与单线程逐像素一致（max|Δ| = 0）。
+                num_threads=WARP_THREADS,
             )
             if tags:
                 dst.update_tags(ns="", **tags)
@@ -825,6 +849,11 @@ def build_mosaic(bbox, zoom, out_path, session, timeout, retries, max_workers,
             dst.write(arr.transpose(2, 0, 1), window=Window(col_off, row_off, TILE, TILE))
         tags_to_write = dict(region_meta) if region_meta else {}
         tags_to_write["source"] = source_cfg["label"]
+        # 【v1.7.9】bbox 模式（不经一键入口，region_meta=None）此前**不写 zoom 标签** ——
+        # 但 `--zoom` 正是本次下载的核心参数，且文档把 zoom 列为血缘标签之一，导致
+        # 「同一产物经 ② bbox 入口产出就没有 zoom、经 ① 一键入口产出就有」的不一致。
+        # 用 setdefault：一键入口已在 region_meta 里写过同值项，不去覆盖它。
+        tags_to_write.setdefault("zoom", str(zoom))
         tags_to_write["failed_tiles"] = str(n_fail)
         tags_to_write["blank_tiles"] = str(n_blank)
         tags_to_write["filled_holes"] = str(holes)

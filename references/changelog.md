@@ -1,4 +1,4 @@
-> 本文是 cn-satellite-imagery（v1.7.8）的参考材料，按需检索，无需整篇读入。
+> 本文是 cn-satellite-imagery（v1.7.9）的参考材料，按需检索，无需整篇读入。
 
 # 更新日志（Changelog）
 
@@ -6,7 +6,31 @@
 > `MINOR`、修 bug 动 `PATCH`。发版三处必须同步：frontmatter `version`、脚本 `__version__`、
 > 产物元数据 `skill_version`，并在此留痕。
 
-- **v1.7.8（当前）**：**全技能优化审视（用户要求「整体，把技能优化审视一遍」）**。
+- **v1.7.9（当前）**：**warp 多线程 + 新增 GitHub README**（用户要求「这个技能要生成一个
+  github 的 readme 文档，同时优化技术」）。动 `make_map.py`、`download_imagery.py` 各一处
+  `reproject`，新增根目录 `README.md`。
+
+  - **(A) 唯一收益项：`reproject` 加 `num_threads`**。此前两处 warp 都是单线程。
+    **关键坑**：设 `GDAL_NUM_THREADS`（或用 `with rasterio.Env(...)` 包住）对它**完全无效** ——
+    实测该变量取 1/2/4/8/ALL_CPUS 时整条读取耗时都在 960~990 ms，概览生成亦然（24~30 s 纯抖动）；
+    GDAL warp 的并行度只认 warp options，必须用 `reproject(num_threads=…)` 显式传参。
+    - 出图链路（4592×4848 → 2296×2424）：387 → **107 ms（3.6×）**
+    - 整幅 3857→4326（23943×29724 源、`--epsg 4326`）：53.3 → **24.9 s（2.14×）**
+    - 两者**逐像素 max|Δ| = 0**（GDAL 多线程 warp 按块独立计算、块间无共享状态）
+    - 端到端出图（同口径微基准）：**2.20 s → 1.64 s（−25%）**，产物与 v1.7.8 **逐像素一致**
+  - **(B) 线程上限 `min(cpu_count, 8)`**：整幅场景 16 线程 **33.0 s**，比 8 线程（25.4 s）
+    **慢 30%**（超额订阅争抢）—— 线程数不是越多越好，8 是拐点。
+  - **(C) 新增 `README.md`**（中文，面向 GitHub / 外部使用者）：特性、安装、快速开始、
+    mermaid 数据流图、输出规格、**性能实测表（含放弃项表）**、项目结构、设计原则、免责声明。
+  - **(E) bbox 模式血缘补 `zoom`**（顺带发现）：`build_mosaic` 的 `tags_to_write` 此前只从
+    `region_meta`（一键入口传入）得到 zoom，经 `--bbox` 直接下载的产物**缺 `zoom` 标签** ——
+    与文档所列血缘标签不一致。现改为 `tags_to_write.setdefault("zoom", str(zoom))`
+    （不覆盖一键入口已写入的同值项）。
+  - **(D) 评估后放弃（均有实测）**：PNG 去 alpha（体积 −11% 但耗时仅 −1.4%，还需自管 DPI
+    元数据与透明回退）· `Figure`+`CanvasAgg` 取代 `pyplot`（只省 25 ms）·
+    `reproject(init_dest_nodata=False)`（无收益）· 概览金字塔多线程（无稳定收益）·
+    warp 提到 16 线程（更慢）。
+- **v1.7.8**：**全技能优化审视（用户要求「整体，把技能优化审视一遍」）**。
   流程：先通读 4 脚本（约 2700 行）+ 4 篇文档 → 做**静态测量**（AST 未用 import / 复杂度 /
   死定义 / 参数面一致性）与**运行时微基准** → 按数据定清单（含**放弃项**）→ 逐项改 → 逐项回归。
   动 `make_map.py`（主）、`download_imagery.py`、`satellite_imagery_cn.py`。
